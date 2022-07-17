@@ -123,6 +123,8 @@ int serial_recvmsg_enable(zcm_trans_generic_serial_t *zt, const char *channel, b
     return ZCM_EOK;
 }
 
+// RRR Was this called repeatedly during the window of missing data and just had nothing to return?
+// Or was it never called until the end of the window of missing data
 int serial_recvmsg(zcm_trans_generic_serial_t *zt, zcm_msg_t *msg, int timeout)
 {
     uint64_t utime = zt->time(zt->time_usr);

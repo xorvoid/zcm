@@ -207,6 +207,7 @@ struct ZCM_TRANS_CLASSNAME : public zcm_trans_t
             timeoutS,           /* seconds */
             timeoutMs * 1000    /* micros */
         };
+        // RRR (Bendes): Look into whether or not we could ignoring the receive timeout
         if (setsockopt(soc, SOL_SOCKET, SO_RCVTIMEO, (char *)&tm, sizeof(tm)) < 0) {
             ZCM_DEBUG("Failed to settimeout");
             return ZCM_EUNKNOWN;
