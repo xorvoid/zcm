@@ -6,3 +6,4 @@ build/
 .lock*
 .waf*
 deps/
+.vscode/
