@@ -81,7 +81,7 @@ def add_zcm_configure_options(ctx):
     add_trans_option('udp',    'Enable the UDP transports (unicast and multicast)')
     add_trans_option('serial', 'Enable the Serial transport')
     add_trans_option('can',    'Enable the Canbus transport')
-    add_trans_option('shmem',  'Enable the Canbus transport')
+    add_trans_option('shmem',  'Enable the Shared Memory transport')
 
 def add_zcm_build_options(ctx):
     gr = ctx.add_option_group('ZCM Build Options')
