@@ -64,9 +64,6 @@ int main(int argc, char *argv[])
     zcm.flush();
     usleep(1e6);
 
-    zcm.setQueueSize(numInBlock * 4);
-    zcm.pause();
-
     auto publishBlock = [&](){
         for (size_t i = 0; i < numInBlock / 2; ++i) {
             zcm.publish(chanO, &msg);
@@ -98,8 +95,6 @@ int main(int argc, char *argv[])
     size_t blockNum = 1;
     while (count < numToRecv) {
         printf("\nWaiting on block %zu\n", blockNum);
-        // This is literally just trying to make the queue resize mess up
-        zcm.setQueueSize(numInBlock * 4 + (blockNum % 2) ? numInBlock : -numInBlock);
         receiveBlock(blockNum);
         publishBlock();
         ++blockNum;

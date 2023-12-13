@@ -132,18 +132,7 @@ void zcm_flush(zcm_t* zcm);
 void zcm_run(zcm_t* zcm);
 void zcm_start(zcm_t* zcm);
 void zcm_stop(zcm_t* zcm);
-void zcm_pause(zcm_t* zcm); /* pauses message dispatch and publishing, not transport */
-void zcm_resume(zcm_t* zcm);
-int  zcm_handle(zcm_t* zcm); /* returns ZCM_EOK normally, error code on failure. */
-/* Determines how many messages can be stored from the transport without being dispatched
-   As well as the number of messages that may be stored from the user without being
-   transmitted by the transport. Normal operation does not require the user to modify
-   this, but if the user is using zcm_pause() and forcing dispatches/transmission through
-   calls to zcm_flush(), it will be important to set an appropriate queue size based on
-   traffic and flush frequency. Note that if either queue reaches maximum capacity,
-   messages will not be read from / sent to the transport, which could cause significant
-   issues depending on the transport. */
-void zcm_set_queue_size(zcm_t* zcm, uint32_t numMsgs);
+int  zcm_handle(zcm_t* zcm, int timeout); /* returns ZCM_EOK normally, error code on failure. */
 
 /* Write topology file to filename. Returns ZCM_EOK normally, error code on failure */
 int zcm_write_topology(zcm_t* zcm, const char* name);

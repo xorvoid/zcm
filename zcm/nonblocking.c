@@ -193,7 +193,7 @@ static void dispatch_message(zcm_nonblocking_t* zcm, zcm_msg_t* msg)
     }
 }
 
-int zcm_nonblocking_handle_nonblock(zcm_nonblocking_t* zcm)
+int zcm_nonblocking_handle(zcm_nonblocking_t* zcm)
 {
     int ret;
     zcm_msg_t msg;

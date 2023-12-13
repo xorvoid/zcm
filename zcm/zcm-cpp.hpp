@@ -39,13 +39,9 @@ class ZCM
     virtual inline void run();
     virtual inline void start();
     virtual inline void stop();
-    virtual inline void pause();
-    virtual inline void resume();
-    virtual inline int  handle();
-    virtual inline void setQueueSize(uint32_t sz);
+    virtual inline int  handle(int timeout);
     virtual inline int  writeTopology(const std::string& name);
     #endif
-    virtual inline int  handleNonblock();
     virtual inline void flush();
 
   public:
