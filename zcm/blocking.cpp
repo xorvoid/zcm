@@ -124,7 +124,6 @@ struct zcm_blocking
     int writeTopology(string name);
 
   private:
-    void sendThreadFunc();
     void recvThreadFunc();
     void hndlThreadFunc();
 
@@ -132,11 +131,9 @@ struct zcm_blocking
 
     void dispatchMsg(zcm_msg_t* msg);
     bool dispatchOneMessage(bool returnIfPaused);
-    bool sendOneMessage(bool returnIfPaused);
 
     // Mutexes protecting the ...OneMessage() functions
     mutex dispOneMutex;
-    mutex sendOneMutex;
 
     bool deleteSubEntry(zcm_sub_t* sub, size_t nentriesleft);
     bool deleteFromSubList(SubList& slist, zcm_sub_t* sub);
@@ -159,7 +156,6 @@ struct zcm_blocking
     mutex subRecvMutex;
 
     static constexpr size_t QUEUE_SIZE = 16;
-    ThreadsafeQueue<Msg> sendQueue {QUEUE_SIZE};
     ThreadsafeQueue<Msg> recvQueue {QUEUE_SIZE};
 
     typedef enum {
@@ -173,7 +169,6 @@ struct zcm_blocking
     // This mutex protects read and write access to the recv mode flag
     mutex recvModeMutex;
 
-    thread sendThread;
     thread recvThread;
     thread hndlThread;
 
@@ -184,21 +179,16 @@ struct zcm_blocking
         THREAD_STATE_HALTED,
     } ThreadState_t;
 
-    ThreadState_t sendThreadState {THREAD_STATE_STOPPED};
     ThreadState_t recvThreadState {THREAD_STATE_STOPPED};
     ThreadState_t hndlThreadState {THREAD_STATE_STOPPED};
 
     // These mutexes protect read and write access to the ThreadState flags
-    // (if you also want to hold the dispOneMutex or sendOneMutex, those mutexes must be locked
-    // before these ones)
-    mutex sendStateMutex;
+    // (if you also want to hold the dispOneMutex that mutex must be locked before these)
     mutex recvStateMutex;
     mutex hndlStateMutex;
 
-    // Flag and condition variables used to pause the sendThread (use sendStateMutex)
-    // and hndlThread (use hndlStateMutex)
+    // Flag and condition variables used to pause the hndlThread (use hndlStateMutex)
     bool               paused {false};
-    condition_variable sendPauseCond;
     condition_variable hndlPauseCond;
 };
 
@@ -307,22 +297,6 @@ int zcm_blocking_t::stop(bool block)
         }
     }
 
-    // Shutdown send thread
-    {
-        unique_lock<mutex> lk2(sendStateMutex);
-        if (sendThreadState == THREAD_STATE_RUNNING) {
-            sendThreadState = THREAD_STATE_HALTING;
-            sendQueue.disable();
-            lk2.unlock();
-            sendPauseCond.notify_all();
-            if (block) {
-                sendThread.join();
-                lk2.lock();
-                sendThreadState = THREAD_STATE_STOPPED;
-            }
-        }
-    }
-
     if (!block) {
         switch (recvMode) {
             case RECV_MODE_SPAWN:
@@ -346,13 +320,6 @@ int zcm_blocking_t::stop(bool block)
                 }
                 break;
             default: break;
-        }
-
-        unique_lock<mutex> lk2(sendStateMutex);
-        if (sendThreadState == THREAD_STATE_HALTING) return ZCM_EAGAIN;
-        if (sendThreadState == THREAD_STATE_HALTED) {
-            sendThread.join();
-            sendThreadState = THREAD_STATE_STOPPED;
         }
     }
 
@@ -404,20 +371,15 @@ int zcm_blocking_t::handle_nonblock()
 
 void zcm_blocking_t::pause()
 {
-    unique_lock<mutex> lk1(sendStateMutex);
-    unique_lock<mutex> lk2(hndlStateMutex);
+    unique_lock<mutex> lk(hndlStateMutex);
     paused = true;
 }
 
 void zcm_blocking_t::resume()
 {
-    unique_lock<mutex> lk1(sendStateMutex);
-    unique_lock<mutex> lk2(hndlStateMutex);
+    unique_lock<mutex> lk(hndlStateMutex);
     paused = false;
-    // Intentionally unlocking in this order
-    lk2.unlock();
-    lk1.unlock();
-    sendPauseCond.notify_all();
+    lk.unlock();
     hndlPauseCond.notify_all();
 }
 
@@ -427,20 +389,14 @@ int zcm_blocking_t::publish(const string& channel, const uint8_t* data, uint32_t
     if (len > mtu) return ZCM_EINVALID;
     if (channel.size() > ZCM_CHANNEL_MAXLEN) return ZCM_EINVALID;
 
-    // If needed: spawn the send thread
-    {
-        unique_lock<mutex> lk(sendStateMutex);
-        if (sendThreadState == THREAD_STATE_STOPPED) {
-            sendThreadState = THREAD_STATE_RUNNING;
-            sendThread = thread{&zcm_blocking::sendThreadFunc, this};
-        }
-    }
-
-    bool success = sendQueue.pushIfRoom(TimeUtil::utime(), channel.c_str(), len, data);
-    if (!success) {
-        ZCM_DEBUG("sendQueue has no free space");
-        return ZCM_EAGAIN;
-    }
+    zcm_msg_t msg = {
+        .utime = TimeUtil::utime(),
+        .channel = channel.c_str(),
+        .len = len,
+        .buf = (uint8_t*)data, // sendmsg guaranteed to not modify data
+    };
+    int ret = zcm_trans_sendmsg(zt, msg);
+    if (ret != ZCM_EOK) ZCM_DEBUG("zcm_trans_sendmsg() returned error, dropping the msg!");
 
 #ifdef TRACK_TRAFFIC_TOPOLOGY
     int64_t hashBE = 0, hashLE = 0;
@@ -534,26 +490,6 @@ int zcm_blocking_t::unsubscribe(zcm_sub_t* sub, bool block)
 
 int zcm_blocking_t::flush(bool block)
 {
-    size_t n;
-
-    {
-        sendQueue.disable();
-
-        unique_lock<mutex> lk(sendOneMutex, defer_lock);
-
-        if (block) lk.lock();
-        else if (!lk.try_lock()) {
-            sendQueue.enable();
-            sendPauseCond.notify_all();
-            return ZCM_EAGAIN;
-        }
-
-        sendQueue.enable();
-        n = sendQueue.numMessages();
-        for (size_t i = 0; i < n; ++i) sendOneMessage(false);
-    }
-    sendPauseCond.notify_all();
-
     {
         recvQueue.disable();
 
@@ -567,7 +503,7 @@ int zcm_blocking_t::flush(bool block)
         }
 
         recvQueue.enable();
-        n = recvQueue.numMessages();
+        size_t n = recvQueue.numMessages();
         for (size_t i = 0; i < n; ++i) dispatchOneMessage(false);
     }
     hndlPauseCond.notify_all();
@@ -577,22 +513,6 @@ int zcm_blocking_t::flush(bool block)
 
 int zcm_blocking_t::setQueueSize(uint32_t numMsgs, bool block)
 {
-    if (sendQueue.getCapacity() != numMsgs) {
-
-        sendQueue.disable();
-
-        unique_lock<mutex> lk(sendOneMutex, defer_lock);
-
-        if (block) lk.lock();
-        else if (!lk.try_lock()) {
-            sendQueue.enable();
-            return ZCM_EAGAIN;
-        }
-
-        sendQueue.setCapacity(numMsgs);
-        sendQueue.enable();
-    }
-
     if (recvQueue.getCapacity() != numMsgs) {
 
         recvQueue.disable();
@@ -610,28 +530,6 @@ int zcm_blocking_t::setQueueSize(uint32_t numMsgs, bool block)
     }
 
     return ZCM_EOK;
-}
-
-void zcm_blocking_t::sendThreadFunc()
-{
-    // Name the send thread
-    SET_THREAD_NAME("ZeroCM_sender");
-
-    while (true) {
-        {
-            unique_lock<mutex> lk(sendStateMutex);
-            sendPauseCond.wait(lk, [&]{
-                    return (!paused && sendQueue.isEnabled()) ||
-                           sendThreadState == THREAD_STATE_HALTING;
-            });
-            if (sendThreadState == THREAD_STATE_HALTING) break;
-        }
-        unique_lock<mutex> lk(sendOneMutex);
-        sendOneMessage(true);
-    }
-
-    unique_lock<mutex> lk(sendStateMutex);
-    sendThreadState = THREAD_STATE_HALTED;
 }
 
 void zcm_blocking_t::recvThreadFunc()
@@ -786,25 +684,6 @@ bool zcm_blocking_t::dispatchOneMessage(bool returnIfPaused)
 
     dispatchMsg(m->get());
     recvQueue.pop();
-    return true;
-}
-
-bool zcm_blocking_t::sendOneMessage(bool returnIfPaused)
-{
-    Msg* m = sendQueue.top();
-    // If the Queue was forcibly woken-up, recheck the
-    // running condition, and then retry.
-    if (m == nullptr) return false;
-
-    if (returnIfPaused) {
-        unique_lock<mutex> lk(sendStateMutex);
-        if (paused || sendThreadState == THREAD_STATE_HALTING) return false;
-    }
-
-    zcm_msg_t* msg = m->get();
-    int ret = zcm_trans_sendmsg(zt, *msg);
-    if (ret != ZCM_EOK) ZCM_DEBUG("zcm_trans_sendmsg() returned error, dropping the msg!");
-    sendQueue.pop();
     return true;
 }
 
